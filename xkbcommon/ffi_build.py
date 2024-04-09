@@ -1,7 +1,7 @@
 from cffi import FFI
 ffibuilder = FFI()
 
-# Currently implemented with reference to libxkbcommon-0.6.0
+# Currently implemented with reference to libxkbcommon-1.0.0
 
 ffibuilder.set_source("xkbcommon._ffi", """
 #include <stdarg.h>
@@ -252,6 +252,14 @@ xkb_keymap_num_layouts_for_key(struct xkb_keymap *keymap, xkb_keycode_t key);
 xkb_level_index_t
 xkb_keymap_num_levels_for_key(struct xkb_keymap *keymap, xkb_keycode_t key,
                               xkb_layout_index_t layout);
+
+size_t
+xkb_keymap_key_get_mods_for_level(struct xkb_keymap *keymap,
+                                  xkb_keycode_t key,
+                                  xkb_layout_index_t layout,
+                                  xkb_level_index_t level,
+                                  xkb_mod_mask_t *masks_out,
+                                  size_t masks_size);
 
 int
 xkb_keymap_key_get_syms_by_level(struct xkb_keymap *keymap,

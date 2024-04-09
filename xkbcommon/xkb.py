@@ -618,6 +618,29 @@ class Keymap:
         """
         return lib.xkb_keymap_num_levels_for_key(self._keymap, key, layout)
 
+    def key_get_mods_for_level(self, key, layout, level):
+        """Retrieves every possible modifier mask that produces the specified
+        shift level for a specific key and layout.
+
+        This API is useful for inverse key transformation;
+        i.e. finding out which modifiers need to be active in order to
+        be able to type the keysym(s) corresponding to the specific
+        key code, layout and level.
+
+        If layout is out of range for this key (that is, larger or
+        equal to the value returned by Keymap.num_layouts_for_key()),
+        it is brought back into range in a manner consistent with
+        State.key_get_layout().
+        """
+        masks_size = 4
+        while True:
+            masks_out = ffi.new(f"xkb_mod_mask_t[{masks_size}]")
+            r = lib.xkb_keymap_key_get_mods_for_level(
+                self._keymap, key, layout, level, masks_out, masks_size)
+            if r < masks_size:
+                return [masks_out[n] for n in range(r)]
+            masks_size = masks_size << 1
+
     def key_get_syms_by_level(self, key, layout, level):
         """Get the keysyms obtained from pressing a key in a given layout and
         shift level.

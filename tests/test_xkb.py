@@ -252,6 +252,15 @@ class TestKeymap(TestCase):
         key = next(iter(self.km))
         self.assertEqual(self.km.num_levels_for_key(key, 0), 1)
 
+    def test_keymap_key_get_mods_for_level(self):
+        first_invalid_mask = 1 << self.km.num_mods()
+        for key in self.km:
+            for layout in range(self.km.num_layouts_for_key(key)):
+                for level in range(self.km.num_levels_for_key(key, layout)):
+                    r = self.km.key_get_mods_for_level(key, layout, level)
+                    for mm in r:
+                        self.assertLess(mm, first_invalid_mask)
+
     def test_keymap_key_get_syms_by_level(self):
         for key in self.km:
             r = self.km.key_get_syms_by_level(key, 0, 0)
