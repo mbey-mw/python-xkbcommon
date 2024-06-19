@@ -524,3 +524,87 @@ class TestKeyboardState(TestCase):
         state = self.km.state_new()
         with self.assertRaises(xkb.XKBInvalidLEDIndex):
             state.led_index_is_active(self.km.num_leds())
+
+
+class TestCompose(TestCase):
+    XKB_KEYSYM_OHORNTILDE = 0x1001ee0
+    UTF8_OHORNTILDE = "Ỡ"
+
+    XKB_KEYSYM_DEAD_CIRCUMFLEX = 0xfe52
+    UTF_CIRCUMFLEX = "^"
+
+    XKB_KEYSYM_DEAD_TILDE = 0xfe53
+    XKB_KEYSYM_DEAD_HORN = 0xfe62
+    XKB_KEYSYM_O = 0x004f
+    XKB_KEYSYM_F = 0x0066
+
+    @classmethod
+    def setUpClass(cls):
+        cls._ctx = xkb.Context()
+        cls.compose = xkb.ComposeState(cls._ctx)
+
+    def test_compose_initial_status(self):
+        self.compose.reset()
+        self.assertEqual(self.compose.get_status(), xkb.lib.XKB_COMPOSE_NOTHING)
+
+    def test_compose_feed_double_dead_circumflex(self):
+        self.compose.reset()
+
+        self.assertEqual(
+            self.compose.feed(self.XKB_KEYSYM_DEAD_CIRCUMFLEX),
+            xkb.lib.XKB_COMPOSE_FEED_ACCEPTED,
+        )
+        self.assertEqual(
+            self.compose.get_status(), xkb.lib.XKB_COMPOSE_COMPOSING
+        )
+
+        self.assertEqual(
+            self.compose.feed(self.XKB_KEYSYM_DEAD_CIRCUMFLEX),
+            xkb.lib.XKB_COMPOSE_FEED_ACCEPTED,
+        )
+        self.assertEqual(
+            self.compose.get_status(), xkb.lib.XKB_COMPOSE_COMPOSED
+        )
+        self.assertEqual(self.compose.get_utf8(), self.UTF_CIRCUMFLEX)
+
+    def test_compose_feed_non_composing(self):
+        self.compose.reset()
+
+        self.assertEqual(
+            self.compose.feed(self.XKB_KEYSYM_DEAD_TILDE),
+            xkb.lib.XKB_COMPOSE_FEED_ACCEPTED,
+        )
+        self.assertEqual(
+            self.compose.feed(self.XKB_KEYSYM_F),
+            xkb.lib.XKB_COMPOSE_FEED_ACCEPTED,
+        )
+        self.assertEqual(
+            self.compose.get_status(), xkb.lib.XKB_COMPOSE_CANCELLED
+        )
+
+        self.assertEqual(
+            self.compose.feed(self.XKB_KEYSYM_F),
+            xkb.lib.XKB_COMPOSE_FEED_ACCEPTED,
+        )
+        self.assertEqual(self.compose.get_status(), xkb.lib.XKB_COMPOSE_NOTHING)
+
+    def test_compose_feed_multi_composing(self):
+        self.compose.reset()
+
+        self.assertEqual(
+            self.compose.feed(self.XKB_KEYSYM_DEAD_TILDE),
+            xkb.lib.XKB_COMPOSE_FEED_ACCEPTED,
+        )
+        self.assertEqual(
+            self.compose.feed(self.XKB_KEYSYM_DEAD_HORN),
+            xkb.lib.XKB_COMPOSE_FEED_ACCEPTED,
+        )
+        self.assertEqual(
+            self.compose.feed(self.XKB_KEYSYM_O),
+            xkb.lib.XKB_COMPOSE_FEED_ACCEPTED,
+        )
+        self.assertEqual(
+            self.compose.get_status(), xkb.lib.XKB_COMPOSE_COMPOSED
+        )
+        self.assertEqual(self.compose.get_utf8(), self.UTF8_OHORNTILDE)
+        self.assertEqual(self.compose.get_one_sym(), self.XKB_KEYSYM_OHORNTILDE)

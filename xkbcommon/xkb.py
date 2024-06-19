@@ -1105,3 +1105,123 @@ class KeyboardState:
         if r == -1:
             raise XKBInvalidLEDIndex()
         return r == 1
+
+
+class ComposeState:
+    """Compose state object.
+    
+    The compose state maintains state for compose sequence matching, such
+    as which possible sequences are being matched, and the position within
+    these sequences. It acts as a simple state machine wherein keysyms are
+    the input, and composed keysyms and strings are the output.
+    
+    The compose state is usually associated with a keyboard device."""
+
+    def __init__(self, context, locale="C"):
+        cLocale = ffi.new("char[]", locale.encode())
+        composeTable = lib.xkb_compose_table_new_from_locale(
+            context._context, cLocale, lib.XKB_COMPOSE_COMPILE_NO_FLAGS
+        )
+
+        if not composeTable:
+            raise XKBError("Couldn't create compose table")
+
+        composeState = lib.xkb_compose_state_new(
+            composeTable, lib.XKB_COMPOSE_STATE_NO_FLAGS
+        )
+
+        # we no longer need the compose table
+        lib.xkb_compose_table_unref(composeTable)
+
+        if not composeState:
+            raise XKBError("Couldn't create compose state")
+
+        self._state = ffi.gc(
+            composeState, _keepref(lib, lib.xkb_compose_state_unref)
+        )
+
+    def feed(self, keysym):
+        """Feed one keysym to the Compose sequence state machine.
+
+        This function can advance into a compose sequence, cancel a sequence,
+        start a new sequence, or do nothing in particular.  The resulting
+        status may be observed with get_status().
+
+        Some keysyms, such as keysyms for modifier keys, are ignored - they
+        have no effect on the status or otherwise.
+
+        The following is a description of the possible status transitions, in
+        the format CURRENT STATUS => NEXT STATUS, given a non-ignored input
+        keysym `keysym`:
+
+        NOTHING or CANCELLED or COMPOSED =>
+           NOTHING   if keysym does not start a sequence.
+           COMPOSING if keysym starts a sequence.
+           COMPOSED  if keysym starts and terminates a single-keysym sequence.
+
+        COMPOSING =>
+           COMPOSING if keysym advances any of the currently possible
+                     sequences but does not terminate any of them.
+           COMPOSED  if keysym terminates one of the currently possible
+                     sequences.
+           CANCELLED if keysym does not advance any of the currently
+                     possible sequences.
+
+        The current Compose formats do not support multiple-keysyms.
+        Therefore, if you are using a function such as
+        KeyboardState.key_get_syms() and it returns more than one keysym,
+        consider feeding lib.XKB_KEY_NoSymbol instead.
+
+        A keysym param is usually obtained after a key-press event, with a
+        function such as KeyboardState.key_get_one_sym().
+
+        Returns whether the keysym was ignored. This is useful, for example,
+        if you want to keep a record of the sequence matched thus far.
+
+        lib.XKB_COMPOSE_FEED_IGNORED
+            The keysym had no effect - it did not affect the status.
+        lib.XKB_COMPOSE_FEED_ACCEPTED
+            The keysym started, advanced or cancelled a sequence."""
+        return lib.xkb_compose_state_feed(self._state, keysym)
+
+    def reset(self):
+        """Reset the Compose sequence state machine.
+
+        The status is set to lib.XKB_COMPOSE_NOTHING, and the current sequence
+        is discarded."""
+        lib.xkb_compose_state_reset(self._state)
+
+    def get_status(self):
+        """Get the current status of the compose state machine.
+
+        lib.XKB_COMPOSE_NOTHING
+            The initial state; no sequence has started yet.
+        lib.XKB_COMPOSE_COMPOSING
+            In the middle of a sequence.
+        lib.XKB_COMPOSE_COMPOSED
+            A complete sequence has been matched.
+        lib.XKB_COMPOSE_CANCELLED
+            The last sequence was cancelled due to an unmatched keysym."""
+        return lib.xkb_compose_state_get_status(self._state)
+
+    def get_utf8(self):
+        """Get the result Unicode/UTF-8 string for a composed sequence.
+        This function is only useful when the status is
+        lib.XKB_COMPOSE_COMPOSED.
+
+        Returns string for composed sequence or empty string if not viable."""
+        buffer = ffi.new("char[" + str(64) + "]")
+        r = lib.xkb_compose_state_get_utf8(self._state, buffer, len(buffer))
+        if r + 1 > len(buffer):
+            buffer = ffi.new("char[" + str(r + 1) + "]")
+            lib.xkb_compose_state_get_utf8(self._state, buffer, len(buffer))
+        return ffi.string(buffer).decode("utf8")
+
+    def get_one_sym(self):
+        """Get the result keysym for a composed sequence.
+        This function is only useful when the status is
+        lib.XKB_COMPOSE_COMPOSED.
+
+        Returns result keysym for composed sequence or lib.XKB_KEY_NoSymbol if
+        not viable."""
+        return lib.xkb_compose_state_get_one_sym(self._state)
