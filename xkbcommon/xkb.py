@@ -110,6 +110,16 @@ class XKBLEDDoesNotExist(XKBError):
         self.led_name = led_name
 
 
+class XKBComposeTableCreationFailure(XKBError):
+    """Unable to create a compose table."""
+    pass
+
+
+class XKBComposeStateCreationFailure(XKBError):
+    """Unable to create a compose state."""
+    pass
+
+
 # Internal helper for logging callback
 def _onerror_do_nothing(exception, exc_value, traceback):
     return
@@ -178,6 +188,24 @@ def keysym_to_lower(keysym):
     Unicode representation instead, when possible.
     """
     return lib.xkb_keysym_to_lower(keysym)
+
+
+# Compose enumerations required by Context object
+
+@enum.unique
+class ComposeCompileFlags(_IntFlag):
+    """Flags affecting Compose file compilation
+    """
+    pass
+
+
+@enum.unique
+class ComposeFormat(enum.IntEnum):
+    """The recognized Compose file formats
+
+    XKB_COMPOSE_FORMAT_TEXT_V1: The classic libX11 Compose text format
+    """
+    XKB_COMPOSE_FORMAT_TEXT_V1 = lib.XKB_COMPOSE_FORMAT_TEXT_V1
 
 
 # Library Context http://xkbcommon.org/doc/current/group__context.html
@@ -431,6 +459,80 @@ class Context:
             raise XKBKeymapCreationFailure(
                 "xkb_keymap_new_from_buffer returned NULL")
         return Keymap(self, r, "buffer")
+
+    # Compose table creation
+    # http://xkbcommon.org/doc/current/group__compose.html
+
+    def compose_table_new_from_locale(self, locale, flags=None):
+        """Create a compose table for a given locale.
+
+        The locale is used for searching the file-system for an
+        appropriate Compose file. The search order is described in
+        Compose(5). It is affected by the following environment
+        variables:
+
+        XCOMPOSEFILE - see Compose(5).
+
+        XDG_CONFIG_HOME - before $HOME/.XCompose is checked,
+        $XDG_CONFIG_HOME/XCompose is checked (with a fall back to
+        $HOME/.config/XCompose if XDG_CONFIG_HOME is not
+        defined). This is a libxkbcommon extension to the search
+        procedure in Compose(5) (since libxkbcommon 1.0.0). Note that
+        other implementations, such as libX11, might not find a
+        Compose file in this path.
+
+        HOME - see Compose(5).
+
+        XLOCALEDIR - if set, used as the base directory for the
+        system's X locale files, e.g. /usr/share/X11/locale, instead
+        of the preconfigured directory.
+        """
+        c_locale = ffi.new("char[]", locale.encode())
+        table = lib.xkb_compose_table_new_from_locale(
+            self._context, c_locale, flags if flags else 0)
+        if not table:
+            raise XKBComposeTableCreationFailure(
+                f"Could not create compose table from locale '{locale}'")
+        return ComposeTable(self, table, "locale")
+
+    # See keymap_new_from_file() for note about FILE *
+    def compose_table_new_from_file(
+            self, file, locale,
+            format=ComposeFormat.XKB_COMPOSE_FORMAT_TEXT_V1, flags=None):
+        "Create a ComposeTable from an open file"
+        try:
+            fn = file.fileno()
+        except Exception:
+            data = file.read()
+            return self._compose_table_new_from_buffer_internal(
+                data, locale, "read_file", format, flags)
+        else:
+            with mmap.mmap(fn, 0) as mm:
+                return self._compose_table_new_from_buffer_internal(
+                    mm, locale, "mmap_file", format, flags)
+
+    def compose_table_new_from_buffer(
+            self, buffer, locale,
+            format=ComposeFormat.XKB_COMPOSE_FORMAT_TEXT_V1, flags=None,
+            length=None):
+        "Create a ComposeTable from a memory buffer."
+        return self._compose_table_new_from_buffer_internal(
+            buffer, locale, "buffer", format, flags, length)
+
+    def _compose_table_new_from_buffer_internal(
+            self, buffer, locale, load_type,
+            format=ComposeFormat.XKB_COMPOSE_FORMAT_TEXT_V1, flags=None,
+            length=None):
+        c_locale = ffi.new("char[]", locale.encode())
+        buf = ffi.from_buffer(buffer)
+        table = lib.xkb_compose_table_new_from_buffer(
+            self._context, buf, length if length else len(buf), c_locale,
+            format, flags if flags else 0)
+        del buf
+        if not table:
+            raise XKBComposeTableCreationFailure(
+                "xkb_compose_table_new_from_buffer returned NULL")
+        return ComposeTable(self, table, load_type)
 
 
 class Keymap:
@@ -746,8 +848,45 @@ class ConsumedMode(enum.IntEnum):
     XKB_CONSUMED_MODE_GTK = lib.XKB_CONSUMED_MODE_GTK
 
 
+@enum.unique
+class ComposeStateFlags(_IntFlag):
+    """Flags for compose state creation
+    """
+    pass
+
+
+@enum.unique
+class ComposeStatus(enum.IntEnum):
+    """Status of the Compose sequence state machine
+
+    XKB_COMPOSE_NOTHING: The initial state; no sequence has started yet
+    XKB_COMPOSE_COMPOSING: In the middle of a sequence
+    XKB_COMPOSE_COMPOSED: A complete sequence has been matched
+    XKB_COMPOSE_CANCELLED: The last sequence was cancelled due to an
+      unmatched keysym
+    """
+    XKB_COMPOSE_NOTHING = lib.XKB_COMPOSE_NOTHING
+    XKB_COMPOSE_COMPOSING = lib.XKB_COMPOSE_COMPOSING
+    XKB_COMPOSE_COMPOSED = lib.XKB_COMPOSE_COMPOSED
+    XKB_COMPOSE_CANCELLED = lib.XKB_COMPOSE_CANCELLED
+
+
+@enum.unique
+class ComposeFeedResult(enum.IntEnum):
+    """The effect of a keysym fed to ComposeState.feed()
+
+    XKB_COMPOSE_FEED_IGNORED: The keysym had no effect
+    XKB_COMPOSE_FEED_ACCEPTED: The keysym started, advanced or cancelled
+      a sequence
+    """
+    XKB_COMPOSE_FEED_IGNORED = lib.XKB_COMPOSE_FEED_IGNORED
+    XKB_COMPOSE_FEED_ACCEPTED = lib.XKB_COMPOSE_FEED_ACCEPTED
+
+
 # Global names for enum members
-for _ec in (KeyDirection, StateComponent, StateMatch, ConsumedMode):
+for _ec in (KeyDirection, StateComponent, StateMatch, ConsumedMode,
+            ComposeCompileFlags, ComposeFormat, ComposeStateFlags,
+            ComposeStatus, ComposeFeedResult):
     for _sc in _ec:
         globals()[_sc.name] = _sc
 
@@ -1107,52 +1246,64 @@ class KeyboardState:
         return r == 1
 
 
+class ComposeTable:
+    """A Compose table.
+
+    Do not instantiate this object directly.  Instead, use the various
+    'compose_table_new_from_' methods of Context.
+    """
+
+    def __init__(self, context, pointer, load_method):
+        self.load_method = load_method
+        self._context = context
+
+        self._table = ffi.gc(
+            pointer, _keepref(lib, lib.xkb_compose_table_unref))
+
+    # Methods to access and iterate over the compose table will be
+    # added for release 1.6
+
+    def compose_state_new(self, flags=None):
+        pointer = lib.xkb_compose_state_new(self._table, flags if flags else 0)
+        if not pointer:
+            raise XKBComposeStateCreationFailure(
+                "Couldn't create compose state")
+        return ComposeState(self, pointer)
+
+
 class ComposeState:
-    """Compose state object.
-    
-    The compose state maintains state for compose sequence matching, such
-    as which possible sequences are being matched, and the position within
-    these sequences. It acts as a simple state machine wherein keysyms are
-    the input, and composed keysyms and strings are the output.
-    
-    The compose state is usually associated with a keyboard device."""
+    """A Compose state object.
 
-    def __init__(self, context, locale="C"):
-        cLocale = ffi.new("char[]", locale.encode())
-        composeTable = lib.xkb_compose_table_new_from_locale(
-            context._context, cLocale, lib.XKB_COMPOSE_COMPILE_NO_FLAGS
-        )
+    The compose state maintains state for compose sequence matching,
+    such as which possible sequences are being matched, and the
+    position within these sequences. It acts as a simple state machine
+    wherein keysyms are the input, and composed keysyms and strings
+    are the output.
 
-        if not composeTable:
-            raise XKBError("Couldn't create compose table")
+    The compose state is usually associated with a keyboard device.
 
-        composeState = lib.xkb_compose_state_new(
-            composeTable, lib.XKB_COMPOSE_STATE_NO_FLAGS
-        )
+    Do not instantiate this object directly.  Instead, use the
+    'compose_state_new()' method of ComposeTable.
+    """
 
-        # we no longer need the compose table
-        lib.xkb_compose_table_unref(composeTable)
-
-        if not composeState:
-            raise XKBError("Couldn't create compose state")
-
+    def __init__(self, table, pointer):
+        self._table = table
         self._state = ffi.gc(
-            composeState, _keepref(lib, lib.xkb_compose_state_unref)
-        )
+            pointer, _keepref(lib, lib.xkb_compose_state_unref))
 
     def feed(self, keysym):
         """Feed one keysym to the Compose sequence state machine.
 
-        This function can advance into a compose sequence, cancel a sequence,
-        start a new sequence, or do nothing in particular.  The resulting
-        status may be observed with get_status().
+        This function can advance into a compose sequence, cancel a
+        sequence, start a new sequence, or do nothing in particular.
+        The resulting status may be observed with get_status().
 
-        Some keysyms, such as keysyms for modifier keys, are ignored - they
-        have no effect on the status or otherwise.
+        Some keysyms, such as keysyms for modifier keys, are ignored -
+        they have no effect on the status or otherwise.
 
-        The following is a description of the possible status transitions, in
-        the format CURRENT STATUS => NEXT STATUS, given a non-ignored input
-        keysym `keysym`:
+        The following is a description of the possible status
+        transitions, in the format CURRENT STATUS => NEXT STATUS,
+        given a non-ignored input keysym `keysym`:
 
         NOTHING or CANCELLED or COMPOSED =>
            NOTHING   if keysym does not start a sequence.
@@ -1169,59 +1320,53 @@ class ComposeState:
 
         The current Compose formats do not support multiple-keysyms.
         Therefore, if you are using a function such as
-        KeyboardState.key_get_syms() and it returns more than one keysym,
-        consider feeding lib.XKB_KEY_NoSymbol instead.
+        KeyboardState.key_get_syms() and it returns more than one
+        keysym, consider feeding lib.XKB_KEY_NoSymbol instead.
 
-        A keysym param is usually obtained after a key-press event, with a
-        function such as KeyboardState.key_get_one_sym().
+        A keysym param is usually obtained after a key-press event,
+        with a function such as KeyboardState.key_get_one_sym().
 
-        Returns whether the keysym was ignored. This is useful, for example,
-        if you want to keep a record of the sequence matched thus far.
-
-        lib.XKB_COMPOSE_FEED_IGNORED
-            The keysym had no effect - it did not affect the status.
-        lib.XKB_COMPOSE_FEED_ACCEPTED
-            The keysym started, advanced or cancelled a sequence."""
-        return lib.xkb_compose_state_feed(self._state, keysym)
+        Returns a ComposeFeedResult indicating whether the keysym was
+        ignored. This is useful, for example, if you want to keep a
+        record of the sequence matched thus far.
+        """
+        return ComposeFeedResult(lib.xkb_compose_state_feed(
+            self._state, keysym))
 
     def reset(self):
         """Reset the Compose sequence state machine.
 
-        The status is set to lib.XKB_COMPOSE_NOTHING, and the current sequence
-        is discarded."""
+        The status is set to ComposeStatus.XKB_COMPOSE_NOTHING, and
+        the current sequence is discarded.
+        """
         lib.xkb_compose_state_reset(self._state)
 
     def get_status(self):
         """Get the current status of the compose state machine.
-
-        lib.XKB_COMPOSE_NOTHING
-            The initial state; no sequence has started yet.
-        lib.XKB_COMPOSE_COMPOSING
-            In the middle of a sequence.
-        lib.XKB_COMPOSE_COMPOSED
-            A complete sequence has been matched.
-        lib.XKB_COMPOSE_CANCELLED
-            The last sequence was cancelled due to an unmatched keysym."""
-        return lib.xkb_compose_state_get_status(self._state)
+        """
+        return ComposeStatus(lib.xkb_compose_state_get_status(self._state))
 
     def get_utf8(self):
         """Get the result Unicode/UTF-8 string for a composed sequence.
-        This function is only useful when the status is
-        lib.XKB_COMPOSE_COMPOSED.
 
-        Returns string for composed sequence or empty string if not viable."""
-        buffer = ffi.new("char[" + str(64) + "]")
-        r = lib.xkb_compose_state_get_utf8(self._state, buffer, len(buffer))
-        if r + 1 > len(buffer):
-            buffer = ffi.new("char[" + str(r + 1) + "]")
-            lib.xkb_compose_state_get_utf8(self._state, buffer, len(buffer))
+        This function is only useful when the status is
+        ComposeStatus.XKB_COMPOSE_COMPOSED.
+
+        Returns string for composed sequence or empty string if not viable.
+        """
+        buffer_size = lib.xkb_compose_state_get_utf8(
+            self._state, ffi.NULL, 0) + 1
+        buffer = ffi.new(f"char[{buffer_size}]")
+        lib.xkb_compose_state_get_utf8(self._state, buffer, buffer_size)
         return ffi.string(buffer).decode("utf8")
 
     def get_one_sym(self):
         """Get the result keysym for a composed sequence.
-        This function is only useful when the status is
-        lib.XKB_COMPOSE_COMPOSED.
 
-        Returns result keysym for composed sequence or lib.XKB_KEY_NoSymbol if
-        not viable."""
+        This function is only useful when the status is
+        ComposeStatus.XKB_COMPOSE_COMPOSED.
+
+        Returns result keysym for composed sequence or
+        lib.XKB_KEY_NoSymbol if not viable.
+        """
         return lib.xkb_compose_state_get_one_sym(self._state)

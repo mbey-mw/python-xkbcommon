@@ -5,7 +5,8 @@ from unittest import TestCase
 
 from xkbcommon import xkb
 
-from tests.data import sample_keymap_string, sample_keymap_bytes
+from tests.data import sample_keymap_string, sample_keymap_bytes, \
+    sample_compose_bytes
 
 import os
 import tempfile
@@ -42,14 +43,18 @@ class TestKeysym(TestCase):
 class TestContext(TestCase):
     @classmethod
     def setUpClass(cls):
-        # Create a temporary keymap file to use while testing.
+        # Create temporary files to use while testing.
         cls._sample_keymap_file = tempfile.NamedTemporaryFile(
             mode='w+b')
         cls._sample_keymap_file.write(sample_keymap_bytes)
+        cls._sample_compose_file = tempfile.NamedTemporaryFile(
+            mode='w+b')
+        cls._sample_compose_file.write(sample_compose_bytes)
 
     @classmethod
     def tearDownClass(cls):
         cls._sample_keymap_file.close()
+        cls._sample_compose_file.close()
 
     def test_create(self):
         xkb.Context()
@@ -151,6 +156,39 @@ class TestContext(TestCase):
         length = len(sample_keymap_bytes)
         km = ctx.keymap_new_from_buffer(test_data, length=length)
         self.assertIsNotNone(km)
+
+    def test_compose_table_new_from_locale(self):
+        ctx = xkb.Context()
+        ct = ctx.compose_table_new_from_locale("en_GB.UTF-8")
+        self.assertIsNotNone(ct)
+        self.assertEqual(ct.load_method, "locale")
+
+    def test_compose_table_new_from_locale_fail(self):
+        ctx = xkb.Context()
+        with self.assertRaises(xkb.XKBComposeTableCreationFailure):
+            ctx.compose_table_new_from_locale("not-a-locale")
+
+    def test_compose_table_new_from_file_mmap(self):
+        ctx = xkb.Context()
+        self._sample_compose_file.seek(0)
+        ct = ctx.compose_table_new_from_file(
+            self._sample_compose_file, "en_US.UTF-8")
+        self.assertIsNotNone(ct)
+        self.assertEqual(ct.load_method, "mmap_file")
+
+    def test_compose_table_new_from_file_no_mmap(self):
+        ctx = xkb.Context()
+        memfile = BytesIO(sample_compose_bytes)
+        ct = ctx.compose_table_new_from_file(memfile, "en_US.UTF-8")
+        self.assertIsNotNone(ct)
+        self.assertEqual(ct.load_method, "read_file")
+
+    def test_compose_table_new_from_buffer(self):
+        ctx = xkb.Context()
+        test_data = sample_compose_bytes
+        ct = ctx.compose_table_new_from_buffer(test_data, "en_US.UTF-8")
+        self.assertIsNotNone(ct)
+        self.assertEqual(ct.load_method, "buffer")
 
 
 # This class makes use of the details of the sample keymap in
@@ -526,6 +564,18 @@ class TestKeyboardState(TestCase):
             state.led_index_is_active(self.km.num_leds())
 
 
+class TestComposeTable(TestCase):
+    @classmethod
+    def setUpClass(cls):
+        ctx = xkb.Context()
+        cls.ct = ctx.compose_table_new_from_buffer(
+            sample_compose_bytes, "en_US.UTF-8")
+
+    def test_compose_table_create_compose_state(self):
+        state = self.ct.compose_state_new()
+        self.assertIsInstance(state, xkb.ComposeState)
+
+
 class TestCompose(TestCase):
     XKB_KEYSYM_OHORNTILDE = 0x1001ee0
     UTF8_OHORNTILDE = "Ỡ"
@@ -540,30 +590,38 @@ class TestCompose(TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls._ctx = xkb.Context()
-        cls.compose = xkb.ComposeState(cls._ctx)
+        ctx = xkb.Context()
+        ct = ctx.compose_table_new_from_buffer(
+            sample_compose_bytes, "en_US.UTF-8")
+        cls.compose = ct.compose_state_new()
 
     def test_compose_initial_status(self):
         self.compose.reset()
-        self.assertEqual(self.compose.get_status(), xkb.lib.XKB_COMPOSE_NOTHING)
+        self.assertEqual(
+            self.compose.get_status(),
+            xkb.ComposeStatus.XKB_COMPOSE_NOTHING
+        )
 
     def test_compose_feed_double_dead_circumflex(self):
         self.compose.reset()
 
         self.assertEqual(
             self.compose.feed(self.XKB_KEYSYM_DEAD_CIRCUMFLEX),
-            xkb.lib.XKB_COMPOSE_FEED_ACCEPTED,
+            xkb.ComposeFeedResult.XKB_COMPOSE_FEED_ACCEPTED
         )
         self.assertEqual(
-            self.compose.get_status(), xkb.lib.XKB_COMPOSE_COMPOSING
+            self.compose.get_status(),
+            xkb.ComposeStatus.XKB_COMPOSE_COMPOSING
         )
 
         self.assertEqual(
             self.compose.feed(self.XKB_KEYSYM_DEAD_CIRCUMFLEX),
-            xkb.lib.XKB_COMPOSE_FEED_ACCEPTED,
+            xkb.ComposeFeedResult.XKB_COMPOSE_FEED_ACCEPTED
         )
+
         self.assertEqual(
-            self.compose.get_status(), xkb.lib.XKB_COMPOSE_COMPOSED
+            self.compose.get_status(),
+            xkb.ComposeStatus.XKB_COMPOSE_COMPOSED
         )
         self.assertEqual(self.compose.get_utf8(), self.UTF_CIRCUMFLEX)
 
@@ -572,39 +630,41 @@ class TestCompose(TestCase):
 
         self.assertEqual(
             self.compose.feed(self.XKB_KEYSYM_DEAD_TILDE),
-            xkb.lib.XKB_COMPOSE_FEED_ACCEPTED,
+            xkb.ComposeFeedResult.XKB_COMPOSE_FEED_ACCEPTED
         )
         self.assertEqual(
             self.compose.feed(self.XKB_KEYSYM_F),
-            xkb.lib.XKB_COMPOSE_FEED_ACCEPTED,
+            xkb.ComposeFeedResult.XKB_COMPOSE_FEED_ACCEPTED
         )
         self.assertEqual(
-            self.compose.get_status(), xkb.lib.XKB_COMPOSE_CANCELLED
+            self.compose.get_status(), xkb.ComposeStatus.XKB_COMPOSE_CANCELLED
         )
 
         self.assertEqual(
             self.compose.feed(self.XKB_KEYSYM_F),
-            xkb.lib.XKB_COMPOSE_FEED_ACCEPTED,
+            xkb.ComposeFeedResult.XKB_COMPOSE_FEED_ACCEPTED
         )
-        self.assertEqual(self.compose.get_status(), xkb.lib.XKB_COMPOSE_NOTHING)
+        self.assertEqual(
+            self.compose.get_status(), xkb.ComposeStatus.XKB_COMPOSE_NOTHING
+        )
 
     def test_compose_feed_multi_composing(self):
         self.compose.reset()
 
         self.assertEqual(
             self.compose.feed(self.XKB_KEYSYM_DEAD_TILDE),
-            xkb.lib.XKB_COMPOSE_FEED_ACCEPTED,
+            xkb.ComposeFeedResult.XKB_COMPOSE_FEED_ACCEPTED
         )
         self.assertEqual(
             self.compose.feed(self.XKB_KEYSYM_DEAD_HORN),
-            xkb.lib.XKB_COMPOSE_FEED_ACCEPTED,
+            xkb.ComposeFeedResult.XKB_COMPOSE_FEED_ACCEPTED
         )
         self.assertEqual(
             self.compose.feed(self.XKB_KEYSYM_O),
-            xkb.lib.XKB_COMPOSE_FEED_ACCEPTED,
+            xkb.ComposeFeedResult.XKB_COMPOSE_FEED_ACCEPTED
         )
         self.assertEqual(
-            self.compose.get_status(), xkb.lib.XKB_COMPOSE_COMPOSED
+            self.compose.get_status(), xkb.ComposeStatus.XKB_COMPOSE_COMPOSED
         )
         self.assertEqual(self.compose.get_utf8(), self.UTF8_OHORNTILDE)
         self.assertEqual(self.compose.get_one_sym(), self.XKB_KEYSYM_OHORNTILDE)
